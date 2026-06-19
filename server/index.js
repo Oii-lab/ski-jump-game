@@ -45,7 +45,6 @@ const Phase = {
 
 // ─── Rooms ────────────────────────────────────────────────────────
 const rooms = new Map();
-let waitingRoom = null;
 
 function createRoom(id) {
   return {
@@ -299,36 +298,41 @@ io.on('connection', (socket) => {
   let myRoom = null;
   let mySlot = -1;
 
-  // Matchmaking
-  if (waitingRoom && waitingRoom.players.length === 1) {
-    myRoom = waitingRoom;
-    waitingRoom = null;
-  } else {
-    myRoom = createRoom(`room_${Date.now()}`);
-    rooms.set(myRoom.id, myRoom);
-    waitingRoom = myRoom;
-  }
+  socket.on('join', ({ roomId }) => {
+    if (!roomId) return;
+    const id = roomId.trim().toUpperCase();
 
-  mySlot = myRoom.players.length;
-  myRoom.players.push(socket);
+    if (!rooms.has(id)) {
+      rooms.set(id, createRoom(id));
+    }
+    myRoom = rooms.get(id);
 
-  socket.emit('joined', { slot: mySlot, roomId: myRoom.id });
+    if (myRoom.players.length >= 2) {
+      socket.emit('room_full');
+      return;
+    }
 
-  if (myRoom.players.length === 2) {
-    broadcast(myRoom, 'opponent_joined', {});
-    // Countdown
-    let count = 3;
-    broadcast(myRoom, 'countdown', { count });
-    const cd = setInterval(() => {
-      count--;
-      if (count > 0) {
-        broadcast(myRoom, 'countdown', { count });
-      } else {
-        clearInterval(cd);
-        startRound(myRoom);
-      }
-    }, 1000);
-  }
+    mySlot = myRoom.players.length;
+    myRoom.players.push(socket);
+
+    socket.emit('joined', { slot: mySlot, roomId: id });
+
+    if (myRoom.players.length === 2) {
+      broadcast(myRoom, 'opponent_joined', {});
+      // Countdown
+      let count = 3;
+      broadcast(myRoom, 'countdown', { count });
+      const cd = setInterval(() => {
+        count--;
+        if (count > 0) {
+          broadcast(myRoom, 'countdown', { count });
+        } else {
+          clearInterval(cd);
+          startRound(myRoom);
+        }
+      }, 1000);
+    }
+  });
 
   socket.on('input', ({ hold }) => {
     if (myRoom && mySlot >= 0) {
@@ -341,7 +345,6 @@ io.on('connection', (socket) => {
       broadcast(myRoom, 'opponent_left', {});
       clearInterval(myRoom.gameLoop);
       rooms.delete(myRoom.id);
-      if (waitingRoom === myRoom) waitingRoom = null;
     }
   });
 });
