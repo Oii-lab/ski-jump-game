@@ -120,13 +120,49 @@
     position: relative; width: 900px;
     height: 0; pointer-events: none;
   }
+  #room-form {
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+  }
+  #room-input {
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 4px;
+    color: #e0e8ff;
+    font-family: 'Courier New', monospace;
+    font-size: 24px;
+    letter-spacing: 0.25em;
+    padding: 10px 20px;
+    text-align: center;
+    text-transform: uppercase;
+    width: 240px;
+    outline: none;
+  }
+  #room-input:focus { border-color: #4da6ff; }
+  #room-btn {
+    background: #4da6ff;
+    border: none; border-radius: 4px;
+    color: #0a0f1e;
+    cursor: pointer;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 0.2em;
+    padding: 10px 28px;
+  }
+  #room-btn:hover { background: #6db8ff; }
+  #room-error { font-size: 12px; color: #ff6b6b; letter-spacing: 0.1em; min-height: 16px; }
 </style>
 </head>
 <body>
 
 <div id="overlay">
   <h1>SKI JUMP</h1>
-  <div class="subtitle">等待對手加入…</div>
+  <div class="subtitle">輸入 Room ID 加入或建立房間</div>
+  <div id="room-form">
+    <input id="room-input" type="text" maxlength="8" placeholder="ROOM ID" autocomplete="off" spellcheck="false" />
+    <div id="room-error"></div>
+    <button id="room-btn">進入</button>
+  </div>
   <div id="hint">P1: SPACE　P2: Z</div>
 </div>
 
@@ -506,9 +542,33 @@ const overlaySubtitle = overlay.querySelector('.subtitle');
 let overlayTitle = overlay.querySelector('h1');
 let countdownEl = null;
 
-socket.on('joined', ({ slot }) => {
+// Room ID join
+const roomInput = document.getElementById('room-input');
+const roomBtn = document.getElementById('room-btn');
+const roomError = document.getElementById('room-error');
+
+function doJoin() {
+  const id = roomInput.value.trim();
+  if (!id) { roomError.textContent = '請輸入 Room ID'; return; }
+  roomError.textContent = '';
+  socket.emit('join', { roomId: id });
+}
+
+roomBtn.addEventListener('click', doJoin);
+roomInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doJoin(); });
+
+socket.on('room_full', () => {
+  roomError.textContent = '房間已滿，請換一個 ID';
+});
+
+socket.on('joined', ({ slot, roomId }) => {
   mySlot = slot;
-  overlaySubtitle.textContent = slot === 0 ? 'P1 (SPACE) — 等待 P2…' : 'P2 (Z) — 等待 P1…';
+  overlayTitle.textContent = 'SKI JUMP';
+  overlaySubtitle.textContent = slot === 0
+    ? 'P1 (SPACE) — 等待 P2 加入 [' + roomId + ']…'
+    : 'P2 (Z) — 等待 P1 加入 [' + roomId + ']…';
+  document.getElementById('room-form').style.display = 'none';
+  document.getElementById('hint').style.display = 'none';
 });
 
 socket.on('opponent_joined', () => {
