@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SKI JUMP</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0f1e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: 'Courier New', monospace;
+    color: #e0e8ff;
+    overflow: hidden;
+    user-select: none;
+  }
+  #ui-top {
+    display: flex;
+    justify-content: space-between;
+    width: 900px;
+    padding: 8px 0;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+  }
+  .player-hud {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 160px;
+  }
+  .player-hud.p2 { align-items: flex-end; }
+  .player-label { font-size: 11px; opacity: 0.5; letter-spacing: 0.15em; }
+  .score-display { font-size: 22px; font-weight: bold; }
+  .p1 .score-display { color: #4da6ff; }
+  .p2 .score-display { color: #ffd84d; }
+  .charge-bar-wrap {
+    width: 120px; height: 6px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .charge-bar {
+    height: 100%; width: 0%;
+    border-radius: 3px;
+    transition: width 0.03s linear;
+  }
+  .p1 .charge-bar { background: #4da6ff; }
+  .p2 .charge-bar { background: #ffd84d; }
+  #round-display {
+    font-size: 12px;
+    opacity: 0.5;
+    letter-spacing: 0.2em;
+    text-align: center;
+    align-self: center;
+  }
+  canvas {
+    display: block;
+    border-radius: 4px;
+    image-rendering: pixelated;
+  }
+  #overlay {
+    position: fixed; inset: 0;
+    background: rgba(10,15,30,0.92);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px;
+    z-index: 10;
+  }
+  #overlay h1 {
+    font-size: 48px;
+    letter-spacing: 0.15em;
+    color: #e0e8ff;
+    text-shadow: 0 0 40px rgba(77,166,255,0.4);
+  }
+  #overlay .subtitle {
+    font-size: 14px;
+    opacity: 0.5;
+    letter-spacing: 0.2em;
+  }
+  #overlay .big-countdown {
+    font-size: 96px;
+    font-weight: bold;
+    color: #4da6ff;
+    text-shadow: 0 0 60px rgba(77,166,255,0.6);
+    line-height: 1;
+  }
+  #overlay .result-row {
+    display: flex; gap: 60px; align-items: flex-end;
+    font-size: 18px;
+  }
+  #overlay .result-score { font-size: 48px; font-weight: bold; }
+  #overlay .winner-tag {
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    opacity: 0.6;
+    margin-bottom: 8px;
+  }
+  #overlay .p1-col { color: #4da6ff; text-align: center; }
+  #overlay .p2-col { color: #ffd84d; text-align: center; }
+  #overlay .vs { font-size: 24px; opacity: 0.3; align-self: center; }
+  #round-banner {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 32px; letter-spacing: 0.2em;
+    color: #e0e8ff;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s;
+    z-index: 9;
+  }
+  #hint {
+    font-size: 11px; opacity: 0.35; letter-spacing: 0.15em;
+    text-align: center; margin-top: 4px;
+  }
+  #distance-labels {
+    position: relative; width: 900px;
+    height: 0; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="overlay">
+  <h1>SKI JUMP</h1>
+  <div class="subtitle">等待對手加入…</div>
+  <div id="hint">P1: SPACE　P2: Z</div>
+</div>
+
+<div id="round-banner"></div>
+
+<div id="ui-top">
+  <div class="player-hud p1">
+    <div class="player-label">P1</div>
+    <div class="score-display" id="score-p1">0</div>
+    <div class="charge-bar-wrap">
+      <div class="charge-bar" id="charge-p1"></div>
+    </div>
+  </div>
+  <div id="round-display">ROUND 1 / 3</div>
+  <div class="player-hud p2">
+    <div class="player-label">P2</div>
+    <div class="score-display" id="score-p2">0</div>
+    <div class="charge-bar-wrap">
+      <div class="charge-bar" id="charge-p2"></div>
+    </div>
+  </div>
+</div>
+
+<canvas id="c" width="900" height="500"></canvas>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+// ─── Canvas Setup ─────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ─── Layout ───────────────────────────────────────────────────────
+// Ramp takeoff point on canvas
+const TAKEOFF_X = 200;
+const TAKEOFF_Y = 180;
+// Slope goes down-right at 35 degrees
+const SLOPE_ANGLE_RAD = 35 * Math.PI / 180;
+const SLOPE_K = Math.tan(SLOPE_ANGLE_RAD);
+// Pixels per metre for rendering
+const PPM = 9;
+
+function worldToCanvas(x, y) {
+  // x = metres forward, y = metres above slope base
+  const sx = TAKEOFF_X + x * PPM;
+  const sy = TAKEOFF_Y - y * PPM + x * PPM * SLOPE_K;
+  return [sx, sy];
+}
+
+// ─── Parallax Layers ──────────────────────────────────────────────
+// Sky gradient + mountains
+function drawBackground(camX) {
+  // Sky
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0a1628');
+  grad.addColorStop(0.5, '#0d2244');
+  grad.addColorStop(1, '#1a3a5c');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars (static)
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  const stars = [[50,30],[120,60],[200,25],[320,45],[450,20],[600,55],[750,35],[820,15],[880,70],[60,90],[400,80]];
+  for (const [sx, sy] of stars) {
+    ctx.fillRect(sx, sy, 1.5, 1.5);
+  }
+
+  // Far mountains (parallax 0.05)
+  drawMountain(camX * 0.05, '#0f2540', [
+    [0,420],[100,280],[200,350],[350,240],[500,300],[650,220],[800,310],[900,420]
+  ]);
+  // Mid mountains (parallax 0.15)
+  drawMountain(camX * 0.15, '#142d4c', [
+    [0,430],[80,320],[180,370],[300,270],[420,340],[550,260],[700,330],[900,430]
+  ]);
+  // Near ridge (parallax 0.3)
+  drawMountain(camX * 0.3, '#1b3a5e', [
+    [0,460],[60,380],[160,420],[280,350],[400,400],[520,340],[680,390],[900,460]
+  ]);
+
+  // Snow ground
+  const groundGrad = ctx.createLinearGradient(0, 380, 0, H);
+  groundGrad.addColorStop(0, '#cce5ff');
+  groundGrad.addColorStop(1, '#a8d4f5');
+  ctx.fillStyle = groundGrad;
+  ctx.fillRect(0, 420, W, H - 420);
+}
+
+function drawMountain(offsetX, color, points) {
+  ctx.beginPath();
+  ctx.moveTo(points[0][0] - offsetX, points[0][1]);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i][0] - offsetX, points[i][1]);
+  }
+  ctx.lineTo(W + 100, H);
+  ctx.lineTo(-100, H);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+// ─── Ramp ─────────────────────────────────────────────────────────
+function drawRamp() {
+  // Ramp body
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  ctx.lineTo(0, 350);
+  // Ramp slope up to takeoff
+  ctx.lineTo(TAKEOFF_X - 60, TAKEOFF_Y + 30);
+  // Curved takeoff lip
+  ctx.quadraticCurveTo(TAKEOFF_X - 20, TAKEOFF_Y + 10, TAKEOFF_X, TAKEOFF_Y);
+  ctx.lineTo(TAKEOFF_X + 10, TAKEOFF_Y + 5);
+  ctx.quadraticCurveTo(TAKEOFF_X - 10, TAKEOFF_Y + 20, TAKEOFF_X - 50, TAKEOFF_Y + 40);
+  ctx.lineTo(20, 360);
+  ctx.lineTo(20, H);
+  ctx.closePath();
+
+  const rampGrad = ctx.createLinearGradient(0, 200, TAKEOFF_X, TAKEOFF_Y);
+  rampGrad.addColorStop(0, '#1e3a5f');
+  rampGrad.addColorStop(1, '#2a5080');
+  ctx.fillStyle = rampGrad;
+  ctx.fill();
+
+  // Snow on ramp
+  ctx.beginPath();
+  ctx.moveTo(0, 350);
+  ctx.lineTo(TAKEOFF_X - 60, TAKEOFF_Y + 30);
+  ctx.quadraticCurveTo(TAKEOFF_X - 20, TAKEOFF_Y + 10, TAKEOFF_X, TAKEOFF_Y);
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = '#e8f4ff';
+  ctx.stroke();
+
+  // Tower supports
+  for (let tx = 30; tx < TAKEOFF_X - 30; tx += 50) {
+    const ty1 = TAKEOFF_Y + 30 + (TAKEOFF_X - 60 - tx) * (H - 350 - TAKEOFF_Y - 30) / (TAKEOFF_X - 60);
+    ctx.beginPath();
+    ctx.moveTo(tx, ty1);
+    ctx.lineTo(tx, H);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#152840';
+    ctx.stroke();
+  }
+}
+
+// ─── Landing Slope ────────────────────────────────────────────────
+function drawSlope() {
+  // Slope goes from takeoff down-right
+  const endX = W + 50;
+  const [ex, ey] = worldToCanvas((endX - TAKEOFF_X) / PPM, 0);
+
+  ctx.beginPath();
+  ctx.moveTo(TAKEOFF_X, TAKEOFF_Y);
+  ctx.lineTo(ex, ey);
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = '#cce5ff';
+  ctx.stroke();
+
+  // Fill below slope
+  ctx.beginPath();
+  ctx.moveTo(TAKEOFF_X, TAKEOFF_Y);
+  ctx.lineTo(ex, ey);
+  ctx.lineTo(W + 50, H);
+  ctx.lineTo(TAKEOFF_X, H);
+  ctx.closePath();
+  const slopeGrad = ctx.createLinearGradient(TAKEOFF_X, TAKEOFF_Y, 0, H);
+  slopeGrad.addColorStop(0, '#b8d8f0');
+  slopeGrad.addColorStop(1, '#8bbbd8');
+  ctx.fillStyle = slopeGrad;
+  ctx.fill();
+
+  // Distance markers every 20m
+  for (let m = 20; m <= 120; m += 20) {
+    const [mx, my] = worldToCanvas(m, 0);
+    if (mx > W) break;
+    // Flag pole
+    ctx.beginPath();
+    ctx.moveTo(mx, my);
+    ctx.lineTo(mx, my - 28);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.stroke();
+    // Flag
+    ctx.beginPath();
+    ctx.moveTo(mx, my - 28);
+    ctx.lineTo(mx + 10, my - 24);
+    ctx.lineTo(mx, my - 20);
+    ctx.fillStyle = m % 40 === 0 ? '#ff4444' : '#ffffff';
+    ctx.fill();
+    // Label
+    ctx.font = '9px Courier New';
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${m}m`, mx, my - 32);
+  }
+}
+
+// ─── Player Rendering ─────────────────────────────────────────────
+const COLORS = ['#4da6ff', '#ffd84d'];
+const SHADOW_COLORS = ['rgba(77,166,255,0.25)', 'rgba(255,216,77,0.25)'];
+
+// Trail history per player
+const trails = [[], []];
+
+function drawPlayer(ps, slotIndex) {
+  if (!ps || !ps.launched) return;
+
+  const [cx, cy] = worldToCanvas(ps.x, ps.y);
+  const color = COLORS[slotIndex];
+
+  // Trail
+  const trail = trails[slotIndex];
+  trail.push([cx, cy]);
+  if (trail.length > 35) trail.shift();
+
+  for (let i = 1; i < trail.length; i++) {
+    const alpha = (i / trail.length) * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(trail[i-1][0], trail[i-1][1]);
+    ctx.lineTo(trail[i][0], trail[i][1]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = color.replace(')', `,${alpha})`).replace('rgb', 'rgba').replace('#', 'rgba(').replace('ff', '255,').replace('a6', '166,').replace('d8', '216,');
+    // simpler alpha trail:
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  if (ps.landed) {
+    // Draw landed skier
+    drawSkierLanded(cx, cy, color, ps.fell, slotIndex);
+    return;
+  }
+
+  // Body rotation based on velocity
+  const angle = Math.atan2(-ps.vy, ps.vx);
+  const goodPosture = ps.holdActive && ps.phase === 'flight';
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(-angle);
+
+  if (goodPosture) {
+    // V-shape / aerodynamic skier
+    drawSkierFlight(color, true);
+  } else {
+    // Tumbling
+    const tumble = (ps.airTime * 200) % (Math.PI * 2);
+    ctx.rotate(tumble);
+    drawSkierFlight(color, false);
+  }
+  ctx.restore();
+}
+
+function drawSkierFlight(color, aerodynamic) {
+  ctx.fillStyle = color;
+  if (aerodynamic) {
+    // Body
+    ctx.fillRect(-10, -3, 20, 5);
+    // Head
+    ctx.beginPath();
+    ctx.arc(-10, 0, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // Skis (V-shape)
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-5, 0);
+    ctx.lineTo(14, -7);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-5, 0);
+    ctx.lineTo(14, 7);
+    ctx.stroke();
+    // Arms out
+    ctx.beginPath();
+    ctx.moveTo(0, -3);
+    ctx.lineTo(-4, -10);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -3);
+    ctx.lineTo(-4, 10);
+    ctx.stroke();
+  } else {
+    // Tumbling blob
+    ctx.beginPath();
+    ctx.arc(0, 0, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(12, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-6, 8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-6,-8); ctx.stroke();
+  }
+}
+
+function drawSkierLanded(cx, cy, color, fell, slotIndex) {
+  ctx.fillStyle = color;
+  if (fell) {
+    // Star burst / wipeout
+    for (let a = 0; a < 6; a++) {
+      const ang = (a / 6) * Math.PI * 2 + slotIndex * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(ang) * 14, cy + Math.sin(ang) * 14);
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    // Standing / arms up
+    ctx.beginPath();
+    ctx.arc(cx, cy - 10, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // Body
+    ctx.fillRect(cx - 2, cy - 6, 4, 14);
+    // Arms up
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx, cy - 4); ctx.lineTo(cx - 8, cy - 12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - 4); ctx.lineTo(cx + 8, cy - 12); ctx.stroke();
+    // Skis
+    ctx.beginPath(); ctx.moveTo(cx - 8, cy + 8); ctx.lineTo(cx + 8, cy + 8); ctx.stroke();
+  }
+}
+
+// ─── Idle skier on ramp ───────────────────────────────────────────
+function drawIdleSkier(slotIndex, chargeRatio) {
+  const x = TAKEOFF_X - 30 - slotIndex * 12;
+  const y = TAKEOFF_Y + 8 + slotIndex * 4;
+  const color = COLORS[slotIndex];
+
+  // Charge glow
+  if (chargeRatio > 0) {
+    ctx.beginPath();
+    ctx.arc(x, y, 12 + chargeRatio * 8, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${slotIndex === 0 ? '77,166,255' : '255,216,77'},${chargeRatio * 0.3})`;
+    ctx.fill();
+  }
+
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y - 10, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillRect(x - 2, y - 6, 4, 12);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x - 8, y + 6); ctx.lineTo(x + 8, y + 6); ctx.stroke();
+}
+
+// ─── HUD helpers ──────────────────────────────────────────────────
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// ─── Socket & Game State ──────────────────────────────────────────
+const socket = io();
+let mySlot = -1;
+let gameState = null;
+let bestScores = [0, 0];
+
+const overlay = document.getElementById('overlay');
+const overlaySubtitle = overlay.querySelector('.subtitle');
+let overlayTitle = overlay.querySelector('h1');
+let countdownEl = null;
+
+socket.on('joined', ({ slot }) => {
+  mySlot = slot;
+  overlaySubtitle.textContent = slot === 0 ? 'P1 (SPACE) — 等待 P2…' : 'P2 (Z) — 等待 P1…';
+});
+
+socket.on('opponent_joined', () => {
+  overlaySubtitle.textContent = '對手加入！準備起跳…';
+});
+
+socket.on('countdown', ({ count }) => {
+  if (!countdownEl) {
+    countdownEl = document.createElement('div');
+    countdownEl.className = 'big-countdown';
+    overlay.appendChild(countdownEl);
+  }
+  overlayTitle.textContent = 'SKI JUMP';
+  overlaySubtitle.textContent = '準備！';
+  countdownEl.textContent = count;
+});
+
+socket.on('round_start', ({ round, totalRounds }) => {
+  overlay.style.display = 'none';
+  trails[0] = []; trails[1] = [];
+  document.getElementById('round-display').textContent = `ROUND ${round} / ${totalRounds}`;
+  showBanner(`ROUND ${round}`);
+});
+
+socket.on('game_state', (state) => {
+  gameState = state;
+  // Update HUD
+  for (let i = 0; i < 2; i++) {
+    const ps = state.players[i];
+    if (!ps) continue;
+    const chargeEl = document.getElementById(`charge-p${i + 1}`);
+    chargeEl.style.width = `${(ps.chargeTime / ps.chargeMax) * 100}%`;
+  }
+});
+
+socket.on('round_end', ({ round, scores, totals }) => {
+  bestScores = totals;
+  document.getElementById('score-p1').textContent = totals[0];
+  document.getElementById('score-p2').textContent = totals[1];
+  showBanner(`ROUND ${round} 結束`);
+});
+
+socket.on('game_over', ({ scores, winner }) => {
+  overlay.style.display = 'flex';
+  overlay.innerHTML = '';
+
+  const title = document.createElement('h1');
+  title.textContent = winner === -1 ? 'TIE!' : `P${winner + 1} WIN!`;
+  title.style.color = winner === -1 ? '#e0e8ff' : COLORS[winner];
+  overlay.appendChild(title);
+
+  const row = document.createElement('div');
+  row.className = 'result-row';
+
+  for (let i = 0; i < 2; i++) {
+    const col = document.createElement('div');
+    col.className = `p${i + 1}-col`;
+    const wtag = document.createElement('div');
+    wtag.className = 'winner-tag';
+    wtag.textContent = winner === i ? '★ WINNER' : '';
+    const sc = document.createElement('div');
+    sc.className = 'result-score';
+    sc.textContent = scores[i];
+    const lb = document.createElement('div');
+    lb.className = 'player-label';
+    lb.textContent = `P${i + 1}`;
+    col.appendChild(wtag);
+    col.appendChild(sc);
+    col.appendChild(lb);
+    if (i === 0) {
+      row.appendChild(col);
+      const vs = document.createElement('div');
+      vs.className = 'vs';
+      vs.textContent = 'VS';
+      row.appendChild(vs);
+    } else {
+      row.appendChild(col);
+    }
+  }
+  overlay.appendChild(row);
+
+  const hint = document.createElement('div');
+  hint.className = 'subtitle';
+  hint.textContent = '重新整理頁面再戰';
+  overlay.appendChild(hint);
+});
+
+socket.on('opponent_left', () => {
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `<h1>SKI JUMP</h1><div class="subtitle">對手已離開</div>`;
+});
+
+// ─── Input ────────────────────────────────────────────────────────
+const MY_KEYS = [['Space'], ['KeyZ']]; // slot 0 = Space, slot 1 = Z
+
+document.addEventListener('keydown', (e) => {
+  if (mySlot < 0) return;
+  if (MY_KEYS[mySlot].includes(e.code)) {
+    e.preventDefault();
+    socket.emit('input', { hold: true });
+  }
+});
+document.addEventListener('keyup', (e) => {
+  if (mySlot < 0) return;
+  if (MY_KEYS[mySlot].includes(e.code)) {
+    e.preventDefault();
+    socket.emit('input', { hold: false });
+  }
+});
+
+// ─── Banner ───────────────────────────────────────────────────────
+const banner = document.getElementById('round-banner');
+function showBanner(text) {
+  banner.textContent = text;
+  banner.style.opacity = 1;
+  setTimeout(() => { banner.style.opacity = 0; }, 1800);
+}
+
+// ─── Render Loop ──────────────────────────────────────────────────
+function render() {
+  requestAnimationFrame(render);
+  ctx.clearRect(0, 0, W, H);
+
+  const camX = 0; // fixed camera
+  drawBackground(camX);
+  drawSlope();
+  drawRamp();
+
+  if (gameState) {
+    for (let i = 0; i < 2; i++) {
+      const ps = gameState.players[i];
+      if (!ps) continue;
+      if (!ps.launched) {
+        drawIdleSkier(i, ps.chargeTime / ps.chargeMax);
+      } else {
+        drawPlayer(ps, i);
+      }
+    }
+
+    // In-flight distance indicators
+    for (let i = 0; i < 2; i++) {
+      const ps = gameState.players[i];
+      if (!ps || !ps.launched || ps.landed) continue;
+      const [cx, cy] = worldToCanvas(ps.x, ps.y);
+      ctx.font = 'bold 11px Courier New';
+      ctx.fillStyle = COLORS[i];
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = 0.8;
+      ctx.fillText(`${ps.x.toFixed(1)}m`, cx, cy - 18);
+      ctx.globalAlpha = 1;
+    }
+  } else {
+    // Draw idle skiers on ramp before game
+    drawIdleSkier(0, 0);
+    drawIdleSkier(1, 0);
+  }
+}
+
+render();
+</script>
+</body>
+</html>
